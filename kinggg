@@ -1,0 +1,93 @@
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+
+public class SimpleProxy
+{
+    private HttpListener _listener;
+
+    public SimpleProxy(string url)
+    {
+        _listener = new HttpListener();
+        _listener.Prefixes.Add(url);  // Add prefix for listening
+    }
+
+    public void Start()
+    {
+        _listener.Start();
+        Console.WriteLine("Proxy started on " + _listener.Prefixes);
+        while (true)
+        {
+            var context = _listener.GetContext();  // Wait for request
+            ThreadPool.QueueUserWorkItem(HandleRequest, context);
+        }
+    }
+
+    private void HandleRequest(object obj)
+    {
+        var context = obj as HttpListenerContext;
+        var request = context.Request;
+        var response = context.Response;
+
+        // Forward the request to the actual server
+        var clientRequestUrl = request.Url.ToString();
+        Console.WriteLine("Request URL: " + clientRequestUrl);
+
+        try
+        {
+            // Create a TCP connection to the server
+            var uri = new Uri(clientRequestUrl);
+            var server = new TcpClient(uri.Host, uri.Port);
+            var stream = server.GetStream();
+
+            // Send the request to the target server
+            string httpRequest = $"{request.HttpMethod} {uri.PathAndQuery} HTTP/{request.ProtocolVersion}";
+            httpRequest += $"\r\nHost: {uri.Host}\r\n";
+            foreach (string header in request.Headers)
+            {
+                httpRequest += $"{header}: {request.Headers[header]}\r\n";
+            }
+            httpRequest += "\r\n";
+
+            byte[] requestBytes = Encoding.ASCII.GetBytes(httpRequest);
+            stream.Write(requestBytes, 0, requestBytes.Length);
+
+            // Receive the response from the server
+            var reader = new StreamReader(stream);
+            var serverResponse = reader.ReadToEnd();
+
+            // Send the server's response back to the client
+            byte[] responseBytes = Encoding.ASCII.GetBytes(serverResponse);
+            response.ContentLength64 = responseBytes.Length;
+            response.OutputStream.Write(responseBytes, 0, responseBytes.Length);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error: " + ex.Message);
+            response.StatusCode = 500;
+            byte[] errorMessage = Encoding.UTF8.GetBytes("Internal Server Error");
+            response.OutputStream.Write(errorMessage, 0, errorMessage.Length);
+        }
+        finally
+        {
+            response.OutputStream.Close();
+        }
+    }
+
+    public void Stop()
+    {
+        _listener.Stop();
+    }
+}
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var proxy = new SimpleProxy("http://localhost:8080/");
+        proxy.Start();
+    }
+}
